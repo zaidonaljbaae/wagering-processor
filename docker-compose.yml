@@ -1,0 +1,84 @@
+name: wagering
+
+x-app: &app
+  build: .
+  image: wagering-processor:local
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  environment: &app-env
+    NODE_ENV: development
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    DATABASE_URL: postgresql://${POSTGRES_USER:-wagering}:${POSTGRES_PASSWORD:-wagering-local}@postgres:5432/${POSTGRES_DB:-wagering}
+    AWS_REGION: us-east-1
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    AUTH_MODE: ${AUTH_MODE:-disabled}
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wagering}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wagering-local}
+      POSTGRES_DB: ${POSTGRES_DB:-wagering}
+    command: ["postgres", "-c", "max_connections=300"]
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:4.4.0
+    environment:
+      SERVICES: sqs
+      EAGER_SERVICE_LOADING: "1"
+    ports:
+      - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"sqs\": \"\\(running\\|available\\)\"'"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  # One-shot: runs migrations and creates the SQS queues (with DLQ redrive).
+  setup:
+    <<: *app
+    command: ["bun", "scripts/setup.ts"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      APP_ROLE: api
+      INSTANCE_ID: api
+    ports:
+      - "127.0.0.1:${API_PORT:-3000}:3000"
+      - "127.0.0.1:${API_METRICS_PORT:-9464}:9464"
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      APP_ROLE: worker
+    deploy:
+      replicas: 2
+
+volumes:
+  pgdata:
