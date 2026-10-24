@@ -1,0 +1,7 @@
+node_modules
+test
+coverage
+.git
+.env
+*.md
+!README.md
